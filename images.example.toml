@@ -1,0 +1,41 @@
+[[images]]
+image = "ghcr.io/zitadel/zitadel:v4.20.0"
+
+[[images]]
+image = "adguard/adguardhome:v1.0.0-b.1"
+
+[[images]]
+image = "homeassistant/home-assistant:2026.7.0.dev202605290320"
+version_regex = '^(?P<version>\d{4}\.\d+\.\d+)'
+mode = "latest"
+
+[[images]]
+image = "registry.yziadi.fyi/icanfixit:latest"
+mode = "digest"
+
+[[images]]
+image = "ghcr.io/seriousm4x/upsnap:5.4.3"
+
+[[images]]
+image = "quiq/registry-ui:0.12.1"
+
+[[images]]
+image = "ghcr.io/bulwarkmail/webmail:1.7.7"
+
+[[images]]
+image = "ghcr.io/gtsteffaniak/filebrowser:2.0.2-stable"
+
+[[images]]
+image = "amir20/dozzle:v11.1-alpine"
+
+[[images]]
+image = "ghcr.io/museofficial/muse:2.11.5"
+
+[[images]]
+image = "stalwartlabs/stalwart:v0.16.12"
+
+[[images]]
+image = "vaultwarden/server:1.37.3"
+
+[[images]]
+image = "diegosouzapw/omniroute:3.8.50-web"

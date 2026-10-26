@@ -1,5 +1,8 @@
 use std::cmp::Ordering;
 
+use anyhow::{anyhow, Result};
+use regex::Regex;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParsedTag {
     prefix: String,
@@ -115,8 +118,11 @@ impl ParsedTag {
             })
     }
 
-    fn is_prerelease(&self) -> bool {
-        self.prerelease.is_some()
+    fn display(&self) -> String {
+        format!(
+            "{}{}.{}.{}",
+            self.prefix, self.major, self.minor, self.patch
+        )
     }
 }
 
@@ -147,6 +153,63 @@ pub fn select_candidates(current_tag: &str, tags: &[String]) -> Option<Candidate
         compatible: compatible.map(|(_, tag)| tag),
         latest: latest.map(|(_, tag)| tag),
     })
+}
+
+pub fn select_candidates_with_regex(
+    current_tag: &str,
+    tags: &[String],
+    regex: &Regex,
+    latest_only: bool,
+) -> Result<Candidates> {
+    let current = parse_version_with_regex(regex, current_tag).ok_or_else(|| {
+        anyhow!(
+            "version_regex did not match current tag {} as a parsable version",
+            current_tag
+        )
+    })?;
+    let upper = current.caret_upper();
+    let mut compatible: Option<(ParsedTag, String)> = None;
+    let mut latest: Option<(ParsedTag, String)> = None;
+
+    for tag in tags {
+        let Some(candidate) = parse_version_with_regex(regex, tag) else {
+            continue;
+        };
+        if candidate.cmp_precedence(&current) != Ordering::Greater {
+            continue;
+        }
+
+        if !latest_only && candidate.core() < upper {
+            update_best(&mut compatible, candidate.clone(), tag);
+        }
+        update_best(&mut latest, candidate, tag);
+    }
+
+    Ok(Candidates {
+        compatible: compatible.map(|(_, tag)| tag),
+        latest: latest.map(|(_, tag)| tag),
+    })
+}
+
+pub fn parse_version_with_regex(regex: &Regex, tag: &str) -> Option<ParsedTag> {
+    captured_version(regex, tag).and_then(ParsedTag::parse)
+}
+
+pub fn display_version_with_regex(regex: &Regex, tag: &str) -> Option<String> {
+    captured_version(regex, tag).map(str::to_string)
+}
+
+pub fn display_version(tag: &str) -> Option<String> {
+    ParsedTag::parse(tag).map(|parsed| parsed.display())
+}
+
+fn captured_version<'a>(regex: &Regex, tag: &'a str) -> Option<&'a str> {
+    let captures = regex.captures(tag)?;
+    captures
+        .name("version")
+        .or_else(|| captures.get(1))
+        .or_else(|| captures.get(0))
+        .map(|capture| capture.as_str())
 }
 
 fn update_best(best: &mut Option<(ParsedTag, String)>, candidate: ParsedTag, tag: &str) {
@@ -244,11 +307,6 @@ fn is_prerelease_label(label: &str) -> bool {
 
 pub fn is_semver_like(tag: &str) -> bool {
     ParsedTag::parse(tag).is_some()
-}
-
-#[allow(dead_code)]
-pub fn is_prerelease(tag: &str) -> bool {
-    ParsedTag::parse(tag).is_some_and(|parsed| parsed.is_prerelease())
 }
 
 #[cfg(test)]
@@ -396,5 +454,72 @@ mod tests {
         assert!(ParsedTag::parse("stable-alpine").is_none());
         assert!(ParsedTag::parse("1.2.3.4").is_none());
         assert!(select_candidates("latest", &["latest".to_string()]).is_none());
+    }
+
+    #[test]
+    fn displays_normalized_versions() {
+        assert_eq!(display_version("v1.20").as_deref(), Some("v1.20.0"));
+        assert_eq!(display_version("2.0.2-stable").as_deref(), Some("2.0.2"));
+        assert_eq!(display_version("latest"), None);
+    }
+
+    #[test]
+    fn parses_custom_regex_capture() {
+        let regex = Regex::new(r"^(?P<version>\d{4}\.\d+\.\d+)").unwrap();
+        assert_eq!(
+            display_version_with_regex(&regex, "2026.7.0.dev202605290320").as_deref(),
+            Some("2026.7.0")
+        );
+        assert_eq!(
+            parse_version_with_regex(&regex, "2026.7.0.dev202605290320")
+                .map(|version| version.display())
+                .as_deref(),
+            Some("2026.7.0")
+        );
+    }
+
+    #[test]
+    fn regex_latest_only_ignores_compatible_candidates() {
+        let regex = Regex::new(r"^(?P<version>\d{4}\.\d+\.\d+)").unwrap();
+        let tags: Vec<String> = [
+            "2026.7.0.dev202605290320",
+            "2026.7.1.dev202606010000",
+            "2026.8.0",
+        ]
+        .iter()
+        .map(|tag| tag.to_string())
+        .collect();
+
+        let result =
+            select_candidates_with_regex("2026.7.0.dev202605290320", &tags, &regex, true).unwrap();
+        assert_eq!(result.compatible, None);
+        assert_eq!(result.latest.as_deref(), Some("2026.8.0"));
+    }
+
+    #[test]
+    fn regex_same_version_does_not_count_as_update() {
+        let regex = Regex::new(r"^(?P<version>\d{4}\.\d+\.\d+)").unwrap();
+        let tags: Vec<String> = ["2026.7.0.dev202605290320", "2026.7.0"]
+            .iter()
+            .map(|tag| tag.to_string())
+            .collect();
+
+        let result =
+            select_candidates_with_regex("2026.7.0.dev202605290320", &tags, &regex, true).unwrap();
+        assert_eq!(result.compatible, None);
+        assert_eq!(result.latest, None);
+    }
+
+    #[test]
+    fn regex_semver_mode_still_computes_compatible() {
+        let regex = Regex::new(r"^(?P<version>\d+\.\d+\.\d+)").unwrap();
+        let tags: Vec<String> = ["1.2.3", "1.2.4", "2.0.0"]
+            .iter()
+            .map(|tag| tag.to_string())
+            .collect();
+
+        let result = select_candidates_with_regex("1.2.3", &tags, &regex, false).unwrap();
+        assert_eq!(result.compatible.as_deref(), Some("1.2.4"));
+        assert_eq!(result.latest.as_deref(), Some("2.0.0"));
     }
 }

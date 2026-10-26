@@ -15,6 +15,9 @@
   <dt>Tag</dt>
   <dd>{{ image.tag }}</dd>
 
+  <dt>Parsed version</dt>
+  <dd>{% if image.has_parsed_version %}<code>{{ image.parsed_version }}</code>{% else %}<span class="muted">not parsed</span>{% endif %}</dd>
+
   <dt>Compatible update</dt>
   <dd>
     {% if image.has_compatible %}

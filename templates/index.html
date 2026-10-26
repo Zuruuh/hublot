@@ -38,10 +38,10 @@
     <tr>
       <th>Status</th>
       <th>Image</th>
+      <th>Parsed version</th>
       <th>Compatible update</th>
       <th>Latest update</th>
       <th>Current digest</th>
-      <th>Last checked</th>
     </tr>
   </thead>
   <tbody>
@@ -53,6 +53,13 @@
         <div class="muted">{{ image.mode_label }}</div>
         {% if image.has_error %}
         <div class="error-text">{{ image.error }}</div>
+        {% endif %}
+      </td>
+      <td>
+        {% if image.has_parsed_version %}
+          <code>{{ image.parsed_version }}</code>
+        {% else %}
+          <span class="muted">—</span>
         {% endif %}
       </td>
       <td>
@@ -76,7 +83,6 @@
           <span class="muted">—</span>
         {% endif %}
       </td>
-      <td>{{ image.last_checked }}</td>
     </tr>
     {% endfor %}
   </tbody>

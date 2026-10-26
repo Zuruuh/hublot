@@ -16,6 +16,8 @@ pub struct Config {
     pub check: CheckConfig,
     #[serde(default)]
     pub registries: HashMap<String, RegistryConfig>,
+    #[serde(default)]
+    pub smtp: Option<SmtpConfig>,
 }
 
 #[derive(Clone, Deserialize)]
@@ -51,6 +53,32 @@ pub struct Credentials {
     pub password: String,
 }
 
+#[derive(Clone, Deserialize)]
+pub struct SmtpConfig {
+    pub host: String,
+    #[serde(default = "default_smtp_port")]
+    pub port: u16,
+    #[serde(default)]
+    pub username: Option<String>,
+    #[serde(default)]
+    pub password_file: Option<PathBuf>,
+    pub from: String,
+    #[serde(default)]
+    pub to: Vec<String>,
+    #[serde(default)]
+    pub tls: Option<SmtpTls>,
+    #[serde(default = "default_smtp_timeout_secs")]
+    pub timeout_secs: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SmtpTls {
+    Implicit,
+    Starttls,
+    None,
+}
+
 impl Config {
     pub fn load(path: &Path) -> Result<Self> {
         let path = fs::canonicalize(path)
@@ -67,6 +95,11 @@ impl Config {
         for registry in config.registries.values_mut() {
             if let Some(password_file) = registry.password_file.take() {
                 registry.password_file = Some(resolve_path(base, password_file));
+            }
+        }
+        if let Some(smtp) = config.smtp.as_mut() {
+            if let Some(password_file) = smtp.password_file.take() {
+                smtp.password_file = Some(resolve_path(base, password_file));
             }
         }
 
@@ -129,6 +162,27 @@ impl Config {
             bail!("output_dir must be an absolute path after resolution");
         }
 
+        if let Some(smtp) = &self.smtp {
+            if smtp.host.trim().is_empty() {
+                bail!("smtp.host must not be empty");
+            }
+            if smtp.port == 0 {
+                bail!("smtp.port must be greater than zero");
+            }
+            if smtp.from.trim().is_empty() {
+                bail!("smtp.from must not be empty");
+            }
+            if smtp.to.is_empty() {
+                bail!("smtp.to must contain at least one recipient");
+            }
+            if smtp.timeout_secs == 0 {
+                bail!("smtp.timeout_secs must be greater than zero");
+            }
+            if smtp.username.is_some() != smtp.password_file.is_some() {
+                bail!("smtp.username and smtp.password_file must be set together");
+            }
+        }
+
         for (host, registry) in &self.registries {
             if host.is_empty() || host.contains('/') || host.chars().any(char::is_whitespace) {
                 bail!("invalid registry host in config: {host}");
@@ -147,6 +201,32 @@ impl Config {
         }
 
         Ok(())
+    }
+}
+
+impl SmtpConfig {
+    pub fn tls_mode(&self) -> SmtpTls {
+        self.tls.unwrap_or(if self.port == 465 {
+            SmtpTls::Implicit
+        } else {
+            SmtpTls::Starttls
+        })
+    }
+
+    pub fn credentials(&self) -> Result<Option<(String, String)>> {
+        match (&self.username, &self.password_file) {
+            (None, None) => Ok(None),
+            (Some(username), Some(path)) => {
+                let password = fs::read_to_string(path).with_context(|| {
+                    format!("failed to read SMTP password file {}", path.display())
+                })?;
+                Ok(Some((
+                    username.clone(),
+                    password.trim_end_matches(['\r', '\n']).to_string(),
+                )))
+            }
+            _ => bail!("smtp.username and smtp.password_file must be set together"),
+        }
     }
 }
 
@@ -174,6 +254,14 @@ fn default_timeout_secs() -> u64 {
     30
 }
 
+fn default_smtp_port() -> u16 {
+    465
+}
+
+fn default_smtp_timeout_secs() -> u64 {
+    30
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -185,7 +273,7 @@ mod tests {
         fs::write(
             &config_path,
             r#"
-            images_file = "images.txt"
+            images_file = "images.toml"
             database = "state/hublot.db"
             output_dir = "site"
 
@@ -201,7 +289,7 @@ mod tests {
         .unwrap();
 
         let config = Config::load(&config_path).unwrap();
-        assert_eq!(config.images_file, dir.path().join("images.txt"));
+        assert_eq!(config.images_file, dir.path().join("images.toml"));
         assert_eq!(config.database, dir.path().join("state/hublot.db"));
         assert_eq!(config.output_dir, dir.path().join("site"));
         assert!(config.registries.contains_key("docker.io"));
@@ -217,7 +305,7 @@ mod tests {
             &config_path,
             format!(
                 r#"
-                images_file = "images.txt"
+                images_file = "images.toml"
                 database = "hublot.db"
                 output_dir = "site"
 
@@ -244,7 +332,7 @@ mod tests {
         fs::write(
             &config_path,
             r#"
-            images_file = "images.txt"
+            images_file = "images.toml"
             database = "hublot.db"
             output_dir = "site"
 
@@ -260,13 +348,75 @@ mod tests {
     }
 
     #[test]
+    fn resolves_smtp_password_and_infers_implicit_tls_for_465() {
+        let dir = tempfile::tempdir().unwrap();
+        let secret = dir.path().join("smtp-token");
+        fs::write(&secret, "smtp-secret\n").unwrap();
+        let config_path = dir.path().join("config.toml");
+        fs::write(
+            &config_path,
+            r#"
+            images_file = "images.toml"
+            database = "hublot.db"
+            output_dir = "site"
+
+            [smtp]
+            host = "smtp.example.com"
+            port = 465
+            username = "mailer"
+            password_file = "smtp-token"
+            from = "hublot@example.com"
+            to = ["me@example.com"]
+            "#,
+        )
+        .unwrap();
+
+        let config = Config::load(&config_path).unwrap();
+        let smtp = config.smtp.as_ref().unwrap();
+        assert_eq!(smtp.password_file.as_ref(), Some(&secret));
+        assert_eq!(smtp.tls_mode(), SmtpTls::Implicit);
+        let credentials = smtp.credentials().unwrap().unwrap();
+        assert_eq!(credentials.0, "mailer");
+        assert_eq!(credentials.1, "smtp-secret");
+    }
+
+    #[test]
+    fn allows_explicit_starttls_on_465() {
+        let dir = tempfile::tempdir().unwrap();
+        let secret = dir.path().join("smtp-token");
+        fs::write(&secret, "smtp-secret").unwrap();
+        let config_path = dir.path().join("config.toml");
+        fs::write(
+            &config_path,
+            r#"
+            images_file = "images.toml"
+            database = "hublot.db"
+            output_dir = "site"
+
+            [smtp]
+            host = "smtp.example.com"
+            port = 465
+            username = "mailer"
+            password_file = "smtp-token"
+            from = "hublot@example.com"
+            to = ["me@example.com"]
+            tls = "starttls"
+            "#,
+        )
+        .unwrap();
+
+        let config = Config::load(&config_path).unwrap();
+        assert_eq!(config.smtp.unwrap().tls_mode(), SmtpTls::Starttls);
+    }
+
+    #[test]
     fn empty_registry_config_is_anonymous() {
         let dir = tempfile::tempdir().unwrap();
         let config_path = dir.path().join("config.toml");
         fs::write(
             &config_path,
             r#"
-            images_file = "images.txt"
+            images_file = "images.toml"
             database = "hublot.db"
             output_dir = "site"
 

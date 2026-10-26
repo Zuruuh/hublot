@@ -48,6 +48,8 @@ struct DetailTemplate {
 struct ImageView {
     reference: String,
     tag: String,
+    parsed_version: String,
+    has_parsed_version: bool,
     mode_label: String,
     status_class: String,
     status_label: String,
@@ -108,6 +110,7 @@ struct JsonImage {
     repository: String,
     tag: String,
     mode: String,
+    parsed_version: Option<String>,
     status: String,
     current_digest: Option<String>,
     baseline_digest: Option<String>,
@@ -236,21 +239,28 @@ impl ImageView {
             .as_deref()
             .map(short_digest)
             .unwrap_or_default();
+        let compatible_tag = image.compatible_tag.clone().unwrap_or_default();
+        let latest_tag = image.latest_tag.clone().unwrap_or_default();
+        let has_latest = !latest_tag.is_empty() && latest_tag != compatible_tag;
+        let mode_label = match image.mode.as_str() {
+            db::MODE_SEMVER => "semver",
+            db::MODE_LATEST => "latest only",
+            db::MODE_DIGEST => "digest fallback",
+            _ => "unknown",
+        };
 
         Self {
             reference: image.reference.clone(),
             tag: image.tag.clone(),
-            mode_label: if image.mode == db::MODE_SEMVER {
-                "semver".to_string()
-            } else {
-                "digest fallback".to_string()
-            },
+            parsed_version: image.parsed_version.clone().unwrap_or_default(),
+            has_parsed_version: image.parsed_version.is_some(),
+            mode_label: mode_label.to_string(),
             status_class: status_class.to_string(),
             status_label: status_label.to_string(),
-            has_compatible: image.compatible_tag.is_some(),
-            compatible_tag: image.compatible_tag.clone().unwrap_or_default(),
-            has_latest: image.latest_tag.is_some(),
-            latest_tag: image.latest_tag.clone().unwrap_or_default(),
+            has_compatible: !compatible_tag.is_empty(),
+            compatible_tag,
+            has_latest,
+            latest_tag,
             has_digest: !digest_short.is_empty(),
             digest_short,
             has_error: image.last_error.is_some(),
@@ -333,6 +343,7 @@ impl JsonImage {
             repository: image.repository.clone(),
             tag: image.tag.clone(),
             mode: image.mode.clone(),
+            parsed_version: image.parsed_version.clone(),
             status: image.status.clone(),
             current_digest: image.current_digest.clone(),
             baseline_digest: image.baseline_digest.clone(),

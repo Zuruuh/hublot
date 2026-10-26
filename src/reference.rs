@@ -1,6 +1,4 @@
-use std::collections::HashSet;
-
-use anyhow::{bail, Context, Result};
+use anyhow::{bail, Result};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ImageRef {
@@ -58,26 +56,6 @@ impl ImageRef {
     pub fn base_url(&self) -> String {
         format!("https://{}", self.api_host())
     }
-}
-
-pub fn parse_image_file(input: &str) -> Result<Vec<ImageRef>> {
-    let mut seen = HashSet::new();
-    let mut images = Vec::new();
-
-    for (index, line) in input.lines().enumerate() {
-        let line = line.split('#').next().unwrap_or("").trim();
-        if line.is_empty() {
-            continue;
-        }
-
-        let image = ImageRef::parse(line)
-            .with_context(|| format!("invalid image reference on line {}", index + 1))?;
-        if seen.insert(image.canonical()) {
-            images.push(image);
-        }
-    }
-
-    Ok(images)
 }
 
 fn split_tag(input: &str) -> Result<(String, String)> {
@@ -262,23 +240,6 @@ mod tests {
         assert_eq!(image.repository, "library/nginx");
         assert_eq!(image.tag, "1.27");
         assert_eq!(parsed("registry-1.docker.io/library/nginx:1.27"), image);
-    }
-
-    #[test]
-    fn parses_comments_and_deduplicates() {
-        let images = parse_image_file(
-            r#"
-            # a comment
-            nginx:1.27
-            nginx:1.27 # duplicate
-            ghcr.io/zuruuh/app:v1
-            "#,
-        )
-        .unwrap();
-
-        assert_eq!(images.len(), 2);
-        assert_eq!(images[0].canonical(), "docker.io/library/nginx:1.27");
-        assert_eq!(images[1].canonical(), "ghcr.io/zuruuh/app:v1");
     }
 
     #[test]

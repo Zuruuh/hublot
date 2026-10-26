@@ -1,4 +1,4 @@
-images_file = "images.txt"
+images_file = "images.toml"
 database = "hublot.db"
 output_dir = "site"
 

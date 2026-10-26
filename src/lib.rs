@@ -1,6 +1,8 @@
 pub mod check;
 pub mod config;
 pub mod db;
+pub mod image_file;
+pub mod notify;
 pub mod reference;
 pub mod registry;
 pub mod site;

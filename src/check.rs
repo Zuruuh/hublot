@@ -7,11 +7,12 @@ use tracing::{error, info, warn};
 
 use crate::{
     config::Config,
-    db::{self, MODE_DIGEST, MODE_SEMVER},
-    reference::{parse_image_file, ImageRef},
+    db,
+    image_file::{parse_image_file, ImageSpec, UpdateMode},
+    notify,
     registry::RegistryClient,
     site,
-    version::{is_semver_like, select_candidates, Candidates},
+    version::{select_candidates, select_candidates_with_regex, Candidates},
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -44,14 +45,15 @@ pub async fn run(config: &Config) -> Result<CheckReport> {
     let now = Utc::now().timestamp();
     let run_id = db::start_run(&connection, now)?;
     let mut records = HashMap::new();
-    for image in &images {
-        let mode = if is_semver_like(&image.tag) {
-            MODE_SEMVER
-        } else {
-            MODE_DIGEST
-        };
-        let record = db::upsert_image(&connection, image, mode, now)?;
-        records.insert(image.canonical(), record);
+    for spec in &images {
+        let record = db::upsert_image(
+            &connection,
+            &spec.image,
+            spec.mode.as_str(),
+            spec.parsed_version.as_deref(),
+            now,
+        )?;
+        records.insert(spec.image.canonical(), record);
     }
 
     let image_count = images.len();
@@ -59,37 +61,37 @@ pub async fn run(config: &Config) -> Result<CheckReport> {
     let semaphore = Arc::new(Semaphore::new(config.check.concurrency));
     let mut tasks = JoinSet::new();
 
-    for image in images {
+    for spec in images {
         let client = Arc::clone(&client);
         let semaphore = Arc::clone(&semaphore);
         tasks.spawn(async move {
             let permit = match semaphore.acquire_owned().await {
                 Ok(permit) => permit,
                 Err(error) => {
-                    return (image, Err(anyhow::Error::new(error)));
+                    return (spec, Err(anyhow::Error::new(error)));
                 }
             };
-            let result = check_image(&client, &image).await;
+            let result = check_image(&client, &spec).await;
             drop(permit);
-            (image, result)
+            (spec, result)
         });
     }
 
     let mut error_count = 0usize;
     while let Some(joined) = tasks.join_next().await {
-        let (image, result) = joined.context("image check task failed")?;
+        let (spec, result) = joined.context("image check task failed")?;
         let record = records
-            .get(&image.canonical())
+            .get(&spec.image.canonical())
             .cloned()
             .ok_or_else(|| anyhow::anyhow!("image record disappeared during check"))?;
 
         match result {
             Ok(CheckOutcome::Semver(candidates)) => {
                 info!(
-                    image = %image.canonical(),
+                    image = %spec.image.canonical(),
                     compatible = candidates.compatible.as_deref().unwrap_or("-"),
                     latest = candidates.latest.as_deref().unwrap_or("-"),
-                    "checked semver image"
+                    "checked version image"
                 );
                 db::record_semver(
                     &connection,
@@ -101,7 +103,7 @@ pub async fn run(config: &Config) -> Result<CheckReport> {
             }
             Ok(CheckOutcome::Digest(digest)) => {
                 info!(
-                    image = %image.canonical(),
+                    image = %spec.image.canonical(),
                     digest = %digest,
                     "checked digest image"
                 );
@@ -110,7 +112,7 @@ pub async fn run(config: &Config) -> Result<CheckReport> {
             Err(check_error) => {
                 error_count += 1;
                 error!(
-                    image = %image.canonical(),
+                    image = %spec.image.canonical(),
                     error = %format!("{check_error:#}"),
                     "image check failed"
                 );
@@ -140,6 +142,7 @@ pub async fn run(config: &Config) -> Result<CheckReport> {
     drop(connection);
 
     site::write_site(config)?;
+    notify::send_pending(config).await?;
 
     Ok(CheckReport {
         image_count,
@@ -147,20 +150,36 @@ pub async fn run(config: &Config) -> Result<CheckReport> {
     })
 }
 
-async fn check_image(client: &RegistryClient, image: &ImageRef) -> Result<CheckOutcome> {
-    if is_semver_like(&image.tag) {
-        let tags = client.list_tags(image).await?;
-        if !tags.iter().any(|tag| tag == &image.tag) {
-            bail!(
-                "current tag {} was not found in the registry tag list",
-                image.tag
-            );
+async fn check_image(client: &RegistryClient, spec: &ImageSpec) -> Result<CheckOutcome> {
+    match spec.mode {
+        UpdateMode::Digest => {
+            let digest = client.manifest_digest(&spec.image).await?;
+            Ok(CheckOutcome::Digest(digest))
         }
-        let candidates = select_candidates(&image.tag, &tags)
-            .ok_or_else(|| anyhow::anyhow!("failed to parse semver tag {}", image.tag))?;
-        Ok(CheckOutcome::Semver(candidates))
-    } else {
-        let digest = client.manifest_digest(image).await?;
-        Ok(CheckOutcome::Digest(digest))
+        UpdateMode::Semver | UpdateMode::Latest => {
+            let tags = client.list_tags(&spec.image).await?;
+            if !tags.iter().any(|tag| tag == &spec.image.tag) {
+                bail!(
+                    "current tag {} was not found in the registry tag list",
+                    spec.image.tag
+                );
+            }
+
+            let latest_only = spec.mode == UpdateMode::Latest;
+            let candidates = if let Some(regex) = &spec.version_regex {
+                select_candidates_with_regex(&spec.image.tag, &tags, regex, latest_only)?
+            } else {
+                let mut candidates =
+                    select_candidates(&spec.image.tag, &tags).ok_or_else(|| {
+                        anyhow::anyhow!("failed to parse semver tag {}", spec.image.tag)
+                    })?;
+                if latest_only {
+                    candidates.compatible = None;
+                }
+                candidates
+            };
+
+            Ok(CheckOutcome::Semver(candidates))
+        }
     }
 }

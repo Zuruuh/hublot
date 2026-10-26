@@ -6,6 +6,7 @@ use rusqlite::{params, Connection, OptionalExtension, Row};
 use crate::reference::ImageRef;
 
 pub const MODE_SEMVER: &str = "semver";
+pub const MODE_LATEST: &str = "latest";
 pub const MODE_DIGEST: &str = "digest";
 
 pub const STATUS_OK: &str = "ok";
@@ -21,8 +22,12 @@ pub struct ImageRecord {
     pub repository: String,
     pub tag: String,
     pub mode: String,
+    pub parsed_version: Option<String>,
     pub current_digest: Option<String>,
     pub baseline_digest: Option<String>,
+    pub notified_compatible_tag: Option<String>,
+    pub notified_latest_tag: Option<String>,
+    pub notified_digest: Option<String>,
     pub compatible_tag: Option<String>,
     pub latest_tag: Option<String>,
     pub status: String,
@@ -99,8 +104,12 @@ pub fn init(connection: &Connection) -> Result<()> {
             repository TEXT NOT NULL,
             tag TEXT NOT NULL,
             mode TEXT NOT NULL,
+            parsed_version TEXT,
             current_digest TEXT,
             baseline_digest TEXT,
+            notified_compatible_tag TEXT,
+            notified_latest_tag TEXT,
+            notified_digest TEXT,
             compatible_tag TEXT,
             latest_tag TEXT,
             status TEXT NOT NULL,
@@ -124,6 +133,41 @@ pub fn init(connection: &Connection) -> Result<()> {
         CREATE INDEX IF NOT EXISTS idx_events_detected_at ON events(detected_at);
         "#,
     )?;
+
+    let mut statement = connection.prepare("PRAGMA table_info(images)")?;
+    let columns = statement
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    drop(statement);
+
+    let mut added_notified_digest = false;
+    for column in [
+        "parsed_version",
+        "notified_compatible_tag",
+        "notified_latest_tag",
+        "notified_digest",
+    ] {
+        if !columns.iter().any(|existing| existing == column) {
+            connection.execute(&format!("ALTER TABLE images ADD COLUMN {column} TEXT"), [])?;
+            if column == "notified_digest" {
+                added_notified_digest = true;
+            }
+        }
+    }
+
+    if added_notified_digest {
+        connection.execute(
+            r#"
+            UPDATE images
+            SET notified_digest = current_digest
+            WHERE notified_digest IS NULL
+              AND current_digest IS NOT NULL
+              AND status != 'update'
+            "#,
+            [],
+        )?;
+    }
+
     Ok(())
 }
 
@@ -136,19 +180,21 @@ pub fn upsert_image(
     connection: &Connection,
     image: &ImageRef,
     mode: &str,
+    parsed_version: Option<&str>,
     now: i64,
 ) -> Result<ImageRecord> {
     connection.execute(
         r#"
         INSERT INTO images (
-            reference, registry, repository, tag, mode, status, active, first_seen
+            reference, registry, repository, tag, mode, parsed_version, status, active, first_seen
         )
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1, ?7)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 1, ?8)
         ON CONFLICT(reference) DO UPDATE SET
             registry = excluded.registry,
             repository = excluded.repository,
             tag = excluded.tag,
             mode = excluded.mode,
+            parsed_version = excluded.parsed_version,
             active = 1
         "#,
         params![
@@ -157,6 +203,7 @@ pub fn upsert_image(
             image.repository,
             image.tag,
             mode,
+            parsed_version,
             STATUS_OK,
             now
         ],
@@ -323,6 +370,7 @@ pub fn record_digest(
                 UPDATE images
                 SET current_digest = ?2,
                     baseline_digest = ?2,
+                    notified_digest = ?2,
                     status = ?3,
                     last_error = NULL,
                     last_checked = ?4
@@ -380,6 +428,26 @@ pub fn record_error(connection: &Connection, image_id: i64, error: &str, now: i6
         WHERE id = ?1
         "#,
         params![image_id, STATUS_ERROR, error, now],
+    )?;
+    Ok(())
+}
+
+pub fn mark_notified(
+    connection: &Connection,
+    image_id: i64,
+    compatible_tag: Option<&str>,
+    latest_tag: Option<&str>,
+    digest: Option<&str>,
+) -> Result<()> {
+    connection.execute(
+        r#"
+        UPDATE images
+        SET notified_compatible_tag = ?2,
+            notified_latest_tag = ?3,
+            notified_digest = ?4
+        WHERE id = ?1
+        "#,
+        params![image_id, compatible_tag, latest_tag, digest],
     )?;
     Ok(())
 }
@@ -460,8 +528,12 @@ fn image_from_row(row: &Row<'_>) -> rusqlite::Result<ImageRecord> {
         repository: row.get("repository")?,
         tag: row.get("tag")?,
         mode: row.get("mode")?,
+        parsed_version: row.get("parsed_version")?,
         current_digest: row.get("current_digest")?,
         baseline_digest: row.get("baseline_digest")?,
+        notified_compatible_tag: row.get("notified_compatible_tag")?,
+        notified_latest_tag: row.get("notified_latest_tag")?,
+        notified_digest: row.get("notified_digest")?,
         compatible_tag: row.get("compatible_tag")?,
         latest_tag: row.get("latest_tag")?,
         status: row.get("status")?,
@@ -492,7 +564,7 @@ mod tests {
     fn records_baselines_and_digest_changes() {
         let (_dir, connection) = setup();
         let now = 100;
-        let image = upsert_image(&connection, &test_image(), MODE_DIGEST, now).unwrap();
+        let image = upsert_image(&connection, &test_image(), MODE_DIGEST, None, now).unwrap();
         record_digest(&connection, &image, "sha256:one", now).unwrap();
 
         let image = get_image(&connection, image.id).unwrap().unwrap();
@@ -516,7 +588,8 @@ mod tests {
     fn records_semver_candidate_changes() {
         let (_dir, connection) = setup();
         let now = 200;
-        let image = upsert_image(&connection, &test_image(), MODE_SEMVER, now).unwrap();
+        let image =
+            upsert_image(&connection, &test_image(), MODE_SEMVER, Some("1.20.0"), now).unwrap();
 
         record_semver(&connection, &image, Some("1.21.0"), Some("2.0.0"), now).unwrap();
         let image = get_image(&connection, image.id).unwrap().unwrap();
@@ -536,7 +609,8 @@ mod tests {
     fn deactivates_images_missing_from_the_current_file() {
         let (_dir, connection) = setup();
         let now = 300;
-        let image = upsert_image(&connection, &test_image(), MODE_SEMVER, now).unwrap();
+        let image =
+            upsert_image(&connection, &test_image(), MODE_SEMVER, Some("1.20.0"), now).unwrap();
         assert_eq!(list_active_images(&connection).unwrap().len(), 1);
 
         deactivate_all(&connection).unwrap();
