@@ -1,0 +1,13 @@
+images_file = "images.txt"
+database = "hublot.db"
+output_dir = "site"
+
+[check]
+concurrency = 4
+timeout_secs = 30
+
+[registries."docker.io"]
+
+[registries."ghcr.io"]
+
+[registries."registry.yziadi.fyi"]

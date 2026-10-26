@@ -1,0 +1,105 @@
+{% extends "base.html" %}
+
+{% block title %}hublot{% endblock %}
+
+{% block content %}
+<section class="summary">
+  <div class="summary-item">
+    <span class="summary-value">{{ total_count }}</span>
+    <span class="summary-label">images</span>
+  </div>
+  <div class="summary-item summary-update">
+    <span class="summary-value">{{ update_count }}</span>
+    <span class="summary-label">updates</span>
+  </div>
+  <div class="summary-item summary-error">
+    <span class="summary-value">{{ error_count }}</span>
+    <span class="summary-label">errors</span>
+  </div>
+  <div class="summary-item">
+    <span class="summary-value">{{ baseline_count }}</span>
+    <span class="summary-label">baselines</span>
+  </div>
+</section>
+
+<section class="run-state">
+  {% if has_last_run %}
+    <span>Last check: {{ last_run_time }}</span>
+    <span class="muted">{{ last_run_status }} · {{ last_run_images }} images · {{ last_run_errors }} errors</span>
+  {% else %}
+    <span>No checks have run yet.</span>
+  {% endif %}
+  <span class="muted">Generated {{ generated_at }}</span>
+</section>
+
+{% if has_images %}
+<table class="images">
+  <thead>
+    <tr>
+      <th>Status</th>
+      <th>Image</th>
+      <th>Compatible update</th>
+      <th>Latest update</th>
+      <th>Current digest</th>
+      <th>Last checked</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for image in images %}
+    <tr>
+      <td><span class="badge {{ image.status_class }}">{{ image.status_label }}</span></td>
+      <td>
+        <a class="image-link" href="{{ image.detail_url }}">{{ image.reference }}</a>
+        <div class="muted">{{ image.mode_label }}</div>
+        {% if image.has_error %}
+        <div class="error-text">{{ image.error }}</div>
+        {% endif %}
+      </td>
+      <td>
+        {% if image.has_compatible %}
+          <span class="candidate compatible">{{ image.compatible_tag }}</span>
+        {% else %}
+          <span class="muted">—</span>
+        {% endif %}
+      </td>
+      <td>
+        {% if image.has_latest %}
+          <span class="candidate latest">{{ image.latest_tag }}</span>
+        {% else %}
+          <span class="muted">—</span>
+        {% endif %}
+      </td>
+      <td>
+        {% if image.has_digest %}
+          <code title="{{ image.digest_short }}">{{ image.digest_short }}</code>
+        {% else %}
+          <span class="muted">—</span>
+        {% endif %}
+      </td>
+      <td>{{ image.last_checked }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<div class="empty-state">
+  No active images. Add references to the configured image file and run <code>hublot check</code>.
+</div>
+{% endif %}
+
+{% if has_events %}
+<section class="events">
+  <h2>Recent changes</h2>
+  <ul>
+    {% for event in recent_events %}
+    <li>
+      <strong>{{ event.reference }}</strong> — {{ event.kind_label }}:
+      {% if event.has_old %}{{ event.old_value }} → {% endif %}
+      {% if event.has_new %}{{ event.new_value }}{% endif %}
+      <span class="muted">{{ event.detected_at }}</span>
+    </li>
+    {% endfor %}
+  </ul>
+</section>
+{% endif %}
+{% endblock %}

@@ -1,0 +1,85 @@
+{% extends "base.html" %}
+
+{% block title %}{{ image.reference }} · hublot{% endblock %}
+
+{% block content %}
+<p><a href="{{ home_path }}">← Back to all images</a></p>
+
+<h1 class="detail-title">{{ image.reference }}</h1>
+<p>
+  <span class="badge {{ image.status_class }}">{{ image.status_label }}</span>
+  <span class="muted">{{ image.mode_label }}</span>
+</p>
+
+<dl class="meta">
+  <dt>Tag</dt>
+  <dd>{{ image.tag }}</dd>
+
+  <dt>Compatible update</dt>
+  <dd>
+    {% if image.has_compatible %}
+      <span class="candidate compatible">{{ image.compatible_tag }}</span>
+    {% else %}
+      <span class="muted">none</span>
+    {% endif %}
+  </dd>
+
+  <dt>Latest update</dt>
+  <dd>
+    {% if image.has_latest %}
+      <span class="candidate latest">{{ image.latest_tag }}</span>
+    {% else %}
+      <span class="muted">none</span>
+    {% endif %}
+  </dd>
+
+  <dt>Current digest</dt>
+  <dd>{% if image.has_digest %}<code>{{ image.digest_short }}</code>{% else %}<span class="muted">not resolved</span>{% endif %}</dd>
+
+  <dt>First seen</dt>
+  <dd>{{ image.first_seen }}</dd>
+
+  <dt>Last checked</dt>
+  <dd>{{ image.last_checked }}</dd>
+
+  <dt>Last changed</dt>
+  <dd>{{ image.last_changed }}</dd>
+</dl>
+
+{% if image.has_error %}
+<div class="error-panel">
+  <strong>Last error</strong>
+  <p>{{ image.error }}</p>
+</div>
+{% endif %}
+
+<section class="events">
+  <h2>History</h2>
+  {% if has_events %}
+  <table class="events-table">
+    <thead>
+      <tr>
+        <th>When</th>
+        <th>Change</th>
+        <th>Old</th>
+        <th>New</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for event in events %}
+      <tr>
+        <td>{{ event.detected_at }}</td>
+        <td>{{ event.kind_label }}</td>
+        <td>{% if event.has_old %}{{ event.old_value }}{% else %}<span class="muted">—</span>{% endif %}</td>
+        <td>{% if event.has_new %}{{ event.new_value }}{% else %}<span class="muted">—</span>{% endif %}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="muted">No changes recorded yet.</p>
+  {% endif %}
+</section>
+
+<p class="muted generated">Generated {{ generated_at }}</p>
+{% endblock %}
