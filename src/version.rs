@@ -88,9 +88,7 @@ impl ParsedTag {
         match (&self.prerelease, &other.prerelease) {
             (None, None) => self.suffix == other.suffix,
             (Some(current), Some(candidate)) => {
-                self.core() == other.core()
-                    && current.label == candidate.label
-                    && current.tail == candidate.tail
+                current.label == candidate.label && current.tail == candidate.tail
             }
             (Some(current), None) => current.tail == other.suffix,
             (None, Some(_)) => false,
@@ -230,7 +228,9 @@ fn is_prerelease_label(label: &str) -> bool {
     matches!(
         label,
         "alpha"
+            | "a"
             | "beta"
+            | "b"
             | "rc"
             | "pre"
             | "preview"
@@ -322,8 +322,25 @@ mod tests {
             "2.0.0-rc.1",
             &["2.0.0-rc.1", "2.0.0-rc.2", "2.0.0", "2.1.0-rc.1"],
         );
-        assert_eq!(result.compatible.as_deref(), Some("2.0.0"));
-        assert_eq!(result.latest.as_deref(), Some("2.0.0"));
+        assert_eq!(result.compatible.as_deref(), Some("2.1.0-rc.1"));
+        assert_eq!(result.latest.as_deref(), Some("2.1.0-rc.1"));
+    }
+
+    #[test]
+    fn tracks_shorthand_beta_channel_across_versions() {
+        let result = candidates(
+            "v1.0.0-b.1",
+            &["v0.108.0-b.91", "v1.0.0-b.1", "v1.0.0-b.2", "v1.0.1-b.1"],
+        );
+        assert_eq!(result.compatible.as_deref(), Some("v1.0.1-b.1"));
+        assert_eq!(result.latest.as_deref(), Some("v1.0.1-b.1"));
+    }
+
+    #[test]
+    fn suggests_same_beta_channel_when_only_a_newer_beta_exists() {
+        let result = candidates("v1.0.0-b.1", &["v1.0.0-b.1", "v1.0.0-b.2"]);
+        assert_eq!(result.compatible.as_deref(), Some("v1.0.0-b.2"));
+        assert_eq!(result.latest.as_deref(), Some("v1.0.0-b.2"));
     }
 
     #[test]
