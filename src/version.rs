@@ -344,6 +344,29 @@ mod tests {
     }
 
     #[test]
+    fn tracks_rc_channel_across_versions_and_to_stable() {
+        let result = candidates(
+            "v2.0.0-rc.1",
+            &[
+                "v2.0.0-rc.1",
+                "v2.0.0-rc.2",
+                "v2.0.1-rc.1",
+                "v2.0.1",
+                "v3.0.0-rc.1",
+            ],
+        );
+        assert_eq!(result.compatible.as_deref(), Some("v2.0.1"));
+        assert_eq!(result.latest.as_deref(), Some("v3.0.0-rc.1"));
+    }
+
+    #[test]
+    fn tracks_rc_channel_when_only_a_newer_rc_exists() {
+        let result = candidates("v2.0.0-rc.1", &["v2.0.0-rc.1", "v2.0.0-rc.2"]);
+        assert_eq!(result.compatible.as_deref(), Some("v2.0.0-rc.2"));
+        assert_eq!(result.latest.as_deref(), Some("v2.0.0-rc.2"));
+    }
+
+    #[test]
     fn zero_fills_partial_versions() {
         let result = candidates("1.20", &["1.20", "1.21", "1.21.5"]);
         assert_eq!(result.compatible.as_deref(), Some("1.21.5"));
